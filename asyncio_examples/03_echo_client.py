@@ -73,9 +73,17 @@ async def tcp_echo_client(message, host, port):
     #        writer.close()
     #        await writer.wait_closed()
 
-    # --- Ваш код здесь ---
-    pass
-    # --- Конец вашего кода ---
+    # Отправляем сообщение
+    writer.write(message.encode())
+    await writer.drain()
+    
+    # Получаем ответ
+    data = await reader.read(1024)
+    print(f"Отправлено: '{message}' -> Получено: '{data.decode()}'")
+    
+    # Закрываем соединение
+    writer.close()
+    await writer.wait_closed()
 
 
 async def main():
@@ -96,9 +104,14 @@ async def main_multiple():
     #       *(tcp_echo_client(msg, HOST, PORT) for msg in messages)
     #   )
 
-    # --- Ваш код здесь ---
-    pass
-    # --- Конец вашего кода ---
+    # Создаем список сообщений
+    messages = [f"Сообщение {i}" for i in range(1, 6)]
+    
+    # Создаем список задач для каждого сообщения
+    tasks = [tcp_echo_client(msg, HOST, PORT) for msg in messages]
+    
+    # Запускаем все задачи одновременно
+    await asyncio.gather(*tasks)
 
 
 if __name__ == '__main__':

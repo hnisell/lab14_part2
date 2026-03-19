@@ -1,167 +1,176 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 """
-Перемножение матриц с использованием multiprocessing.Process и Queue.
-
-Основа — функция element() из репозитория:
-https://github.com/fa-python-network/3_Parallelism
-
-Задания:
-  TODO 1 — создать процесс для каждого элемента и собрать результаты через Queue
-  TODO 2 — замерить время последовательного и параллельного вычисления
-
-Запуск:
-    python3 02_matrix_multiply.py
-
-═══════════════════════════════════════════════════════════════════════
-СПРАВКА: Оригинальный код из репозитория 3_Parallelism
-═══════════════════════════════════════════════════════════════════════
-
-В репозитории приведён следующий пример функции element и запуска процесса:
-
-    def element(index, A, B, res):
-        i, j = index
-        res = 0
-        N = len(A[0]) or len(B)
-        for k in range(N):
-            res += A[i][k] * B[k][j]
-        return res
-
-    from multiprocessing import Process
-
-    p1 = Process(target=element, args=[(0, 0), matrix1, matrix2, res])
-    p1.start()
-    p1.join()
-
-Проблема: переменная res не изменится в главном процессе, потому что
-каждый процесс работает с собственной КОПИЕЙ памяти. Запись в res внутри
-дочернего процесса не влияет на res в родительском.
-
-Решение: использовать multiprocessing.Queue для передачи результатов
-из дочернего процесса в родительский. Именно это вы реализуете ниже.
-═══════════════════════════════════════════════════════════════════════
+Перемножение матриц с использованием нескольких процессов.
+Основано на коде из репозитория 3_Parallelism.
 """
 
-import time
 from multiprocessing import Process, Queue
+import time
+import random
 
+# СПРАВКА: Оригинальный код из 3_Parallelism/matrix_multiply.py
+# def element(index, A, B):
+#     i, j = index
+#     res = 0
+#     # получить размерность A (предполагаем, что A и B квадратные)
+#     N = len(A[0]) или len(B)
+#     for k in range(N):
+#         res += A[i][k] * B[k][j]
+#     return res
+#
+# В нашей версии используется очередь для сбора результатов.
 
-def element(index, A, B):
-    """Вычисляет один элемент произведения матриц A * B.
+def generate_matrix(rows, cols, min_val=0, max_val=5):
+    """Генерирует матрицу заданного размера со случайными значениями."""
+    return [[random.randint(min_val, max_val) for _ in range(cols)] for _ in range(rows)]
 
-    Args:
-        index: кортеж (i, j) — позиция элемента в результирующей матрице
-        A: первая матрица (список списков)
-        B: вторая матрица (список списков)
-
-    Returns:
-        Значение элемента C[i][j]
-    """
-    i, j = index
-    res = 0
-    N = len(A[0])
-    for k in range(N):
-        res += A[i][k] * B[k][j]
-    return res
-
+def print_matrix(matrix, name="Матрица"):
+    """Красиво выводит матрицу (только если она небольшая)."""
+    print(f"\n{name}:")
+    for row in matrix:
+        print("  ", row)
 
 def element_to_queue(index, A, B, q):
-    """Обёртка над element(), записывающая результат в Queue."""
-    result = element(index, A, B)
-    q.put((index, result))
+    """
+    Вычисляет один элемент результирующей матрицы и помещает результат в очередь.
+    
+    Аргументы:
+        index: кортеж (i, j) - индексы элемента
+        A, B: исходные матрицы
+        q: очередь multiprocessing.Queue для отправки результата
+    """
+    i, j = index
+    # Предполагаем, что матрицы согласованы: количество столбцов A = количество строк B
+    N = len(A[0])  # или len(B)
+    res = 0
+    for k in range(N):
+        res += A[i][k] * B[k][j]
+    q.put((index, res))  # отправляем результат в очередь
 
-
-# ──────────────────────────────────────────────
-# Исходные матрицы (3x3)
-# ──────────────────────────────────────────────
-matrix_a = [
-    [1, 2, 3],
-    [4, 5, 6],
-    [7, 8, 9],
-]
-
-matrix_b = [
-    [9, 8, 7],
-    [6, 5, 4],
-    [3, 2, 1],
-]
-
-
-def sequential_multiply(A, B):
-    """Последовательное перемножение матриц (для сравнения)."""
+def multiply_matrices_sequential(A, B):
+    """Последовательное перемножение матриц (без распараллеливания)."""
     rows = len(A)
     cols = len(B[0])
-    result = [[0] * cols for _ in range(rows)]
+    result = [[0 for _ in range(cols)] for _ in range(rows)]
+    
     for i in range(rows):
         for j in range(cols):
-            result[i][j] = element((i, j), A, B)
+            for k in range(len(A[0])):
+                result[i][j] += A[i][k] * B[k][j]
     return result
 
-
-def parallel_multiply(A, B):
-    """Параллельное перемножение матриц: один процесс на каждый элемент."""
+def multiply_matrices_parallel(A, B):
+    """
+    Параллельное перемножение матриц с использованием процессов.
+    Каждый элемент вычисляется в отдельном процессе.
+    """
     rows = len(A)
     cols = len(B[0])
-    result = [[0] * cols for _ in range(rows)]
-
+    result = [[0 for _ in range(cols)] for _ in range(rows)]
+    
+    # Создаем очередь для сбора результатов
     q = Queue()
     processes = []
-
-    # TODO 1: Для каждого элемента (i, j) результирующей матрицы создайте
-    # отдельный процесс, который вызовет element_to_queue(index, A, B, q).
-    # Добавьте процесс в список processes и запустите его.
-    #
-    # Подсказка:
-    #   for i in range(rows):
-    #       for j in range(cols):
-    #           p = Process(target=element_to_queue, args=((i, j), A, B, q))
-    #           processes.append(p)
-    #           p.start()
-
-    # --- Ваш код здесь ---
-
-    # --- Конец вашего кода ---
-
+    
+    # Создаем список всех индексов результирующей матрицы
+    indices = [(i, j) for i in range(rows) for j in range(cols)]
+    
+    # TODO 1: Создать процесс для каждого элемента результирующей матрицы
+    # и передать результат через Queue.
+    for index in indices:
+        p = Process(target=element_to_queue, args=(index, A, B, q))
+        processes.append(p)
+        p.start()
+    
+    # Ожидаем завершения всех процессов
     for p in processes:
         p.join()
-
-    while not q.empty():
-        (i, j), value = q.get()
+    
+    # Собираем результаты из очереди
+    results_received = 0
+    while results_received < len(indices):
+        index, value = q.get()
+        i, j = index
         result[i][j] = value
-
+        results_received += 1
+    
     return result
+
+def main():
+    """Основная функция для демонстрации перемножения матриц."""
+    print("=" * 60)
+    print("ПЕРЕМНОЖЕНИЕ МАТРИЦ С ИСПОЛЬЗОВАНИЕМ ПРОЦЕССОВ")
+    print("=" * 60)
+    
+    # Задаем размеры матриц
+    rows_A, cols_A = 3, 3  # матрица A: 3x3
+    rows_B, cols_B = 3, 3  # матрица B: 3x3 (должна быть cols_A x rows_B)
+    
+    # Генерируем случайные матрицы
+    A = generate_matrix(rows_A, cols_A)
+    B = generate_matrix(rows_B, cols_B)
+    
+    # Выводим исходные матрицы (для небольших размеров)
+    if rows_A <= 5 and cols_A <= 5:
+        print_matrix(A, "Матрица A")
+        print_matrix(B, "Матрица B")
+    
+    print("\n" + "-" * 40)
+    print("ПОСЛЕДОВАТЕЛЬНОЕ ВЫЧИСЛЕНИЕ")
+    print("-" * 40)
+    
+    # TODO 2: Замерить время последовательного и параллельного вычисления
+    start_time = time.time()
+    result_seq = multiply_matrices_sequential(A, B)
+    end_time = time.time()
+    seq_time = end_time - start_time
+    
+    print(f"Время последовательного вычисления: {seq_time:.4f} сек")
+    
+    if rows_A <= 5 and cols_A <= 5:
+        print_matrix(result_seq, "Результат (последовательно)")
+    
+    print("\n" + "-" * 40)
+    print("ПАРАЛЛЕЛЬНОЕ ВЫЧИСЛЕНИЕ (отдельные процессы)")
+    print("-" * 40)
+    
+    start_time = time.time()
+    result_par = multiply_matrices_parallel(A, B)
+    end_time = time.time()
+    par_time = end_time - start_time
+    
+    print(f"Время параллельного вычисления: {par_time:.4f} сек")
+    
+    if rows_A <= 5 and cols_A <= 5:
+        print_matrix(result_par, "Результат (параллельно)")
+    
+    print("\n" + "-" * 40)
+    print("СРАВНЕНИЕ РЕЗУЛЬТАТОВ")
+    print("-" * 40)
+    
+    # Проверяем, совпадают ли результаты
+    if result_seq == result_par:
+        print("✓ Результаты совпадают!")
+    else:
+        print("✗ ОШИБКА: Результаты не совпадают!")
+    
+    # Вычисляем ускорение
+    if par_time > 0:
+        speedup = seq_time / par_time
+        print(f"Ускорение: {speedup:.2f}x")
+    
+    print("\n" + "=" * 60)
+    print("Анализ эффективности:")
+    print(f"  - Всего создано процессов: {rows_A * cols_B}")
+    print(f"  - Последовательное время: {seq_time:.4f} сек")
+    print(f"  - Параллельное время: {par_time:.4f} сек")
+    print(f"  - Ускорение: {seq_time/par_time:.2f}x")
+    print("=" * 60)
 
 
 if __name__ == '__main__':
-    print("Матрица A:")
-    for row in matrix_a:
-        print(f"  {row}")
-    print("Матрица B:")
-    for row in matrix_b:
-        print(f"  {row}")
-    print()
-
-    # Последовательное вычисление
-    t1 = time.time()
-    result_seq = sequential_multiply(matrix_a, matrix_b)
-    time_seq = time.time() - t1
-
-    print("Результат (последовательно):")
-    for row in result_seq:
-        print(f"  {row}")
-    print(f"Время: {time_seq:.6f} сек\n")
-
-    # TODO 2: Замерьте время параллельного вычисления аналогично
-    # последовательному. Выведите результат и время. Сравните.
-    #
-    # Подсказка:
-    #   t2 = time.time()
-    #   result_par = parallel_multiply(matrix_a, matrix_b)
-    #   time_par = time.time() - t2
-    #   print("Результат (параллельно):")
-    #   for row in result_par:
-    #       print(f"  {row}")
-    #   print(f"Время: {time_par:.6f} сек\n")
-    #   print(f"Ускорение: {time_seq / time_par:.2f}x")
-
-    # --- Ваш код здесь ---
-
-    # --- Конец вашего кода ---
+    main()
+    # Раскомментируйте следующую строку для тестирования с разными размерами
+    # test_with_different_sizes()
